@@ -1,17 +1,31 @@
 import streamlit as st
 import yfinance as yf
 from pykrx import stock as krx_stock
-import json
 import requests
 from datetime import date, timedelta
+from supabase import create_client
+
+supabase = create_client(
+    st.secrets["SUPABASE_URL"],
+    st.secrets["SUPABASE_KEY"],
+)
 
 
 def load_holdings():
-    return st.session_state.get("holdings", [])
+    res = supabase.table("holdings").select("*").execute()
+    return res.data or []
 
 
-def save_holdings(holdings):
-    st.session_state["holdings"] = holdings
+def add_holding(holding):
+    supabase.table("holdings").insert(holding).execute()
+
+
+def update_holding_qty(ticker, quantity):
+    supabase.table("holdings").update({"quantity": quantity}).eq("ticker", ticker).execute()
+
+
+def delete_holding(ticker):
+    supabase.table("holdings").delete().eq("ticker", ticker).execute()
 
 
 def is_korean_stock(ticker):
@@ -123,9 +137,6 @@ def to_display(value_native, native_market, display_currency, usdkrw):
 st.set_page_config(page_title="주식 포트폴리오", page_icon="📈", layout="wide")
 st.title("📈 주식 포트폴리오 관리")
 
-if "holdings" not in st.session_state:
-    st.session_state["holdings"] = []
-
 holdings = load_holdings()
 
 # ── 사이드바 ─────────────────────────────────────────────────────────────────
@@ -164,15 +175,12 @@ with st.sidebar:
                 st.error(f"{ticker} 는 이미 등록된 종목입니다.")
             else:
                 market = "KR" if is_korean_stock(ticker) else "US"
-                holdings.append(
-                    {
-                        "ticker": ticker,
-                        "name": preview_name,
-                        "quantity": quantity,
-                        "market": market,
-                    }
-                )
-                save_holdings(holdings)
+                add_holding({
+                    "ticker": ticker,
+                    "name": preview_name,
+                    "quantity": quantity,
+                    "market": market,
+                })
                 st.rerun()
 
     st.divider()
@@ -188,35 +196,6 @@ with st.sidebar:
     if st.button("🔄 시세 새로고침", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-
-    st.divider()
-
-    # ── 데이터 내보내기 / 불러오기 ────────────────────────────────────────
-    st.subheader("데이터 백업")
-
-    if holdings:
-        st.download_button(
-            label="💾 JSON으로 내보내기",
-            data=json.dumps(holdings, ensure_ascii=False, indent=2),
-            file_name="holdings.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-
-    uploaded = st.file_uploader("📂 JSON 불러오기", type="json")
-    if uploaded is not None:
-        try:
-            imported = json.load(uploaded)
-            if isinstance(imported, list):
-                save_holdings(imported)
-                st.success("불러오기 완료!")
-                st.rerun()
-            else:
-                st.error("올바른 형식의 파일이 아닙니다.")
-        except Exception:
-            st.error("파일을 읽는 중 오류가 발생했습니다.")
-
-    st.caption("⚠️ 페이지를 새로고침하면 데이터가 초기화됩니다. 종료 전 반드시 내보내기 하세요.")
 
 # ── 데이터 없음 ──────────────────────────────────────────────────────────────
 if not holdings:
@@ -235,16 +214,14 @@ with st.spinner("실시간 시세 조회 중..."):
         qty = h["quantity"]
         market = h["market"]
         cur_val = price * qty if price is not None else None
-        rows.append(
-            dict(
-                ticker=h["ticker"],
-                name=h["name"],
-                market=market,
-                quantity=qty,
-                price=price,
-                cur_val=cur_val,
-            )
-        )
+        rows.append(dict(
+            ticker=h["ticker"],
+            name=h["name"],
+            market=market,
+            quantity=qty,
+            price=price,
+            cur_val=cur_val,
+        ))
 
 # ── 요약 지표 ────────────────────────────────────────────────────────────────
 kr_rows = [r for r in rows if r["market"] == "KR"]
@@ -302,11 +279,7 @@ def render_table(target_rows, ns):
             cols[3].write(disp(r["price"]) if r["price"] is not None else "⚠️ 조회 실패")
             cols[4].write(disp(r["price"] * new_qty) if r["price"] is not None else "—")
             if cols[5].button("✅", key=f"{ns}_save_{ticker}", help="저장"):
-                for h in holdings:
-                    if h["ticker"] == ticker:
-                        h["quantity"] = new_qty
-                        break
-                save_holdings(holdings)
+                update_holding_qty(ticker, new_qty)
                 st.session_state.editing = None
                 st.rerun()
             if cols[6].button("✖️", key=f"{ns}_cancel_{ticker}", help="취소"):
@@ -320,8 +293,7 @@ def render_table(target_rows, ns):
                 st.session_state.editing = ticker
                 st.rerun()
             if cols[6].button("🗑️", key=f"{ns}_del_{ticker}", help="삭제"):
-                updated = [h for h in holdings if h["ticker"] != ticker]
-                save_holdings(updated)
+                delete_holding(ticker)
                 st.rerun()
 
 
