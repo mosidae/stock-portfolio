@@ -188,7 +188,7 @@ with st.sidebar:
     display_currency = st.radio(
         "표시 통화",
         ["각자 통화", "원화(₩)", "달러($)"],
-        index=0,
+        index=1,
     )
 
     st.divider()
